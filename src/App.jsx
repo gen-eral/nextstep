@@ -849,7 +849,12 @@ function ActionPlanPage() {
             <Card className="p-5 sm:p-6">
               <SectionHeading eyebrow="AI-powered" title="Ask a follow-up question" />
               <InsightChat
-                context={{ environmental: appData.environmental, safety: appData.safety, simulation: appData.simulation }}
+                context={{
+                  location: appData.location,
+                  environmental: appData.environmental,
+                  safety: appData.safety,
+                  simulation: appData.simulation,
+                }}
               />
             </Card>
           )}

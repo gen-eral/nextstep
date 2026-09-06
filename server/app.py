@@ -1,11 +1,11 @@
 """
 AI backend for EcoRisk Live -- Feature 3.
 
-Uses OpenAI's API (the model behind ChatGPT) instead of a local
-Ollama model. Simpler than Ollama: no multi-gigabyte model
-download, no separate "ollama serve" process to keep running --
-just an API key. It costs a small amount per request (gpt-4o-mini
-is cheap: a fraction of a cent per exchange for this app's usage).
+Uses Groq's API, which is free (no credit card required) and
+OpenAI-compatible, so it works with the same `openai` Python
+package -- only the base_url and model name differ from a real
+OpenAI setup. (OpenAI's own API is pay-per-use with no ongoing
+free tier, which is why this uses Groq instead.)
 
 This still needs to run SOMEWHERE the frontend can reach it over
 the network -- your own machine during development/demos, or a
@@ -13,12 +13,13 @@ real hosted server if you want it live for the public. A static
 site like GitHub Pages cannot run this by itself.
 
 SETUP:
-  1. Get an API key: https://platform.openai.com/api-keys
+  1. Get a free API key: https://console.groq.com/keys
+     (sign up with email, no card needed)
   2. pip install -r requirements.txt
   3. Create a file named .env in this server/ folder containing:
-       OPENAI_API_KEY=sk-...your-key-here...
+       GROQ_API_KEY=gsk_...your-key-here...
      NEVER commit this file or put the key in any frontend code --
-     anyone who saw it could run up charges on your account. This
+     anyone who saw it could use up your free quota. This
      project's .gitignore already excludes .env, but double-check
      before pushing.
   4. python app.py                        (runs on :5001)
@@ -43,7 +44,7 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)  # allow the Vite dev server (localhost:5173) to call this
 
-MODEL = "gpt-4o-mini"  # fast and cheap; swap for "gpt-4o" for higher quality
+MODEL = "openai/gpt-oss-120b"  # Groq's free-tier model; see console.groq.com/docs/models for the current list
 
 _client = None
 
@@ -56,13 +57,15 @@ def get_client():
     it can even start serving requests."""
     global _client
     if _client is None:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not set. Create server/.env with "
-                "OPENAI_API_KEY=sk-... (see the setup notes at the top of this file)."
+                "GROQ_API_KEY is not set. Create server/.env with "
+                "GROQ_API_KEY=gsk_... (see the setup notes at the top of this file)."
             )
-        _client = OpenAI(api_key=api_key)
+        # Groq exposes an OpenAI-compatible API, so the same `openai`
+        # package works here -- base_url is the only thing that changes.
+        _client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
     return _client
 
 
@@ -102,7 +105,7 @@ DATA:
 
 
 def generate_insights(environmental, safety, simulation):
-    """Calls OpenAI and returns the parsed dict. Raises on any
+    """Calls the model and returns the parsed dict. Raises on any
     failure (no API key, bad JSON, rate limit, etc.) -- the route
     below turns that into an HTTP error, and the frontend turns
     THAT into a fallback to the rule-based generator, so the UI
@@ -112,7 +115,7 @@ def generate_insights(environmental, safety, simulation):
     response = get_client().chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},  # guarantees valid JSON back, unlike Ollama
+        response_format={"type": "json_object"},  # guarantees valid JSON back
     )
 
     raw = response.choices[0].message.content.strip()
@@ -145,22 +148,44 @@ def chat():
     messages = body.get("messages") or []
     context = body.get("context") or {}
 
+    # Real, verified national contact points (checked at the time this
+    # was written). Handing these to the model directly means it can
+    # answer "what number do I call" questions with real information
+    # instead of either inventing a number or refusing to answer.
+    known_resources = (
+        "KNOWN RESOURCES (United States, verified national numbers you may "
+        "share directly when relevant -- these are not specific to the "
+        "person's searched location beyond what's in DATA below):\n"
+        "- Immediate danger to life, health, or property: call 911.\n"
+        "- Report an oil/chemical spill or other hazardous-material "
+        "release, 24/7: National Response Center, 1-800-424-8802.\n"
+        "- Report a non-emergency environmental violation (industrial "
+        "smoke or odors, illegal dumping, improper hazardous-waste "
+        "handling): EPA's online tip form at epa.gov/tips (anonymous is "
+        "fine), or EPA's Community Hotline, 1-800-962-6215 "
+        "(Mon-Fri 9am-5pm ET).\n"
+        "- Poisoning or toxic exposure: Poison Control, 1-800-222-1222, "
+        "24/7.\n"
+        "- Current air quality conditions and alerts for any US location: "
+        "airnow.gov."
+    )
+
     system_prompt = (
-        "You are a friendly environmental health assistant. You must ground "
-        "every answer STRICTLY in the data provided below -- never invent "
-        "numbers, locations, health claims, or facts that aren't in it. This "
-        "is the only data you have for the person's searched location "
-        "(JSON): "
-        + json.dumps(context)
-        + ". If a question genuinely cannot be answered from this data "
-        "(e.g. they ask about a different city, a health condition, or "
-        "something this dashboard doesn't track), say plainly that you "
-        "don't have that information here, and suggest a real resource: "
-        "airnow.gov for current US air quality alerts, their local health "
-        "department for health-specific questions, or 911/local emergency "
-        "services for a genuine emergency. Never guess to fill the gap. "
-        "Answer directly and concisely (2-4 sentences unless they ask for "
-        "more detail). Don't restate the raw JSON back at them."
+        "You are a friendly environmental health assistant. You must "
+        "ground every answer STRICTLY in the DATA below or in KNOWN "
+        "RESOURCES below -- never invent numbers, locations, health "
+        "claims, or facts that aren't in one of the two.\n\n"
+        "DATA (this is the only data you have for the person's searched "
+        "location, JSON): " + json.dumps(context) + "\n\n"
+        + known_resources + "\n\n"
+        "If a question genuinely cannot be answered from DATA or KNOWN "
+        "RESOURCES (e.g. they ask about a different city's real-time "
+        "conditions, a personal health diagnosis, or something this "
+        "dashboard doesn't track), say plainly that you don't have that "
+        "information here, and point to the closest resource above or "
+        "their local health department. Never guess to fill the gap. "
+        "Answer directly and concisely (2-4 sentences unless they ask "
+        "for more detail). Don't restate the raw JSON back at them."
     )
 
     openai_messages = [{"role": "system", "content": system_prompt}] + messages

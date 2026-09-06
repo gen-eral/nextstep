@@ -1,5 +1,6 @@
 const AI_API_URL = import.meta.env.VITE_AI_API_URL; // e.g. http://localhost:5001/api/ai-insights
 const FETCH_TIMEOUT_MS = 4000;
+const CHAT_FETCH_TIMEOUT_MS = 15000;
 
 // ---- Layer 1: rule-based generator (always available) ----
 
@@ -224,23 +225,35 @@ export function isChatConfigured() {
 // route — kept in sync by hand since this is the client-side
 // mirror of that same behavior, not a shared import (this file
 // runs in the browser; app.py runs in Python).
+const KNOWN_RESOURCES = [
+  "KNOWN RESOURCES (United States, verified national numbers you may share directly when relevant — these are not specific to the person's searched location beyond what's in DATA below):",
+  "- Immediate danger to life, health, or property: call 911.",
+  "- Report an oil/chemical spill or other hazardous-material release, 24/7: National Response Center, 1-800-424-8802.",
+  "- Report a non-emergency environmental violation (industrial smoke or odors, illegal dumping, improper hazardous-waste handling): EPA's online tip form at epa.gov/tips (anonymous is fine), or EPA's Community Hotline, 1-800-962-6215 (Mon–Fri 9am–5pm ET).",
+  "- Poisoning or toxic exposure: Poison Control, 1-800-222-1222, 24/7.",
+  "- Current air quality conditions and alerts for any US location: airnow.gov.",
+].join("\n");
+
 function buildChatSystemPrompt(context) {
   return (
     "You are a friendly environmental health assistant. You must ground " +
-    "every answer STRICTLY in the data provided below — never invent " +
-    "numbers, locations, health claims, or facts that aren't in it. This " +
-    "is the only data you have for the person's searched location " +
-    "(JSON): " +
+    "every answer STRICTLY in the DATA below or in KNOWN RESOURCES below " +
+    "— never invent numbers, locations, health claims, or facts that " +
+    "aren't in one of the two.\n\n" +
+    "DATA (this is the only data you have for the person's searched " +
+    "location, JSON): " +
     JSON.stringify(context) +
-    ". If a question genuinely cannot be answered from this data " +
-    "(e.g. they ask about a different city, a health condition, or " +
-    "something this dashboard doesn't track), say plainly that you " +
-    "don't have that information here, and suggest a real resource: " +
-    "airnow.gov for current US air quality alerts, their local health " +
-    "department for health-specific questions, or 911/local emergency " +
-    "services for a genuine emergency. Never guess to fill the gap. " +
-    "Answer directly and concisely (2-4 sentences unless they ask for " +
-    "more detail). Don't restate the raw JSON back at them."
+    "\n\n" +
+    KNOWN_RESOURCES +
+    "\n\n" +
+    "If a question genuinely cannot be answered from DATA or KNOWN " +
+    "RESOURCES (e.g. they ask about a different city's real-time " +
+    "conditions, a personal health diagnosis, or something this " +
+    "dashboard doesn't track), say plainly that you don't have that " +
+    "information here, and point to the closest resource above or their " +
+    "local health department. Never guess to fill the gap. Answer " +
+    "directly and concisely (2-4 sentences unless they ask for more " +
+    "detail). Don't restate the raw JSON back at them."
   );
 }
 
@@ -248,8 +261,7 @@ async function fetchChatReplyFromBackend(messages, context) {
   if (!CHAT_API_URL) throw new Error("Backend not configured");
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
+    const timeout = setTimeout(() => controller.abort(), CHAT_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(CHAT_API_URL, {
       method: "POST",
@@ -273,7 +285,7 @@ async function fetchChatReplyDirectFromOpenAI(messages, context) {
   if (!CLIENT_SIDE_OPENAI_KEY) throw new Error("Client-side OpenAI key not configured");
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), CHAT_FETCH_TIMEOUT_MS);
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
