@@ -202,23 +202,37 @@ export async function fetchAIInsights(environmental, safety, simulation) {
 //   1. Your own Flask backend (server/app.py), if VITE_AI_API_URL
 //      is set and that server is actually reachable. Preferred —
 //      the API key never touches the browser.
-//   2. A direct browser -> OpenAI call, if VITE_OPENAI_API_KEY is
-//      set. Works with ZERO backend server running (so it works on
-//      a plain deployed GitHub Pages site too) — the tradeoff is
-//      that key ships inside your built JS and is technically
-//      visible to anyone who looks. Use a key with a strict
-//      spending cap set in your OpenAI dashboard for this reason.
+//   2. A direct browser -> Anthropic (Claude) call, if
+//      VITE_ANTHROPIC_API_KEY is set. Works with ZERO backend
+//      server running (so it works on a plain deployed GitHub
+//      Pages site too) — Anthropic's API explicitly supports this
+//      via an opt-in header, unlike OpenAI's API, which blocks
+//      direct browser calls with CORS entirely. The tradeoff is
+//      still that this key ships inside your built JS and is
+//      technically visible to anyone who looks — use a key with a
+//      strict spending cap set in your Anthropic Console for this
+//      reason.
 //
 // isChatConfigured() lets the UI decide upfront whether to even
 // offer a chat box; fetchChatReply throws only if BOTH paths fail,
 // so the UI can show a clear "unavailable" state instead of
 // hanging or faking a response.
 const CHAT_API_URL = AI_API_URL ? AI_API_URL.replace(/\/api\/ai-insights\/?$/, "/api/chat") : null;
-const CLIENT_SIDE_OPENAI_KEY = import.meta.env.VITE_OPENAI_API_KEY;
-const CLIENT_SIDE_OPENAI_MODEL = "gpt-4o-mini";
+const CLIENT_SIDE_ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
+const CLIENT_SIDE_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+
+// Runs once when this file loads. Check your browser DevTools
+// console (F12) for this line to see, at a glance, whether your
+// env vars were actually picked up -- no more guessing.
+console.log(
+  "[ai.js] chat config — backend URL:",
+  CHAT_API_URL ?? "(not set)",
+  "| client-side Anthropic key:",
+  CLIENT_SIDE_ANTHROPIC_KEY ? `set (${CLIENT_SIDE_ANTHROPIC_KEY.slice(0, 7)}...)` : "(not set)",
+);
 
 export function isChatConfigured() {
-  return CHAT_API_URL != null || CLIENT_SIDE_OPENAI_KEY != null;
+  return CHAT_API_URL != null || CLIENT_SIDE_ANTHROPIC_KEY != null;
 }
 
 // Same strict-grounding instructions as server/app.py's /api/chat
@@ -281,30 +295,37 @@ async function fetchChatReplyFromBackend(messages, context) {
   }
 }
 
-async function fetchChatReplyDirectFromOpenAI(messages, context) {
-  if (!CLIENT_SIDE_OPENAI_KEY) throw new Error("Client-side OpenAI key not configured");
+async function fetchChatReplyDirectFromAnthropic(messages, context) {
+  if (!CLIENT_SIDE_ANTHROPIC_KEY) throw new Error("Client-side Anthropic key not configured");
 
   const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), CHAT_FETCH_TIMEOUT_MS);
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${CLIENT_SIDE_OPENAI_KEY}`,
+        "content-type": "application/json",
+        "x-api-key": CLIENT_SIDE_ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+        // Anthropic's explicit, documented opt-in for calling their API
+        // directly from browser JS — without this header, they
+        // deliberately block the request with CORS (see their API docs).
+        "anthropic-dangerous-direct-browser-access": "true",
       },
       body: JSON.stringify({
-        model: CLIENT_SIDE_OPENAI_MODEL,
-        messages: [{ role: "system", content: buildChatSystemPrompt(context) }, ...messages],
+        model: CLIENT_SIDE_ANTHROPIC_MODEL,
+        max_tokens: 400,
+        system: buildChatSystemPrompt(context),
+        messages, // Anthropic takes the system prompt separately, not as a message
       }),
       signal: controller.signal,
     });
 
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error?.message ?? `OpenAI responded ${response.status}`);
+    if (!response.ok) throw new Error(data.error?.message ?? `Anthropic responded ${response.status}`);
 
-    return data.choices[0].message.content.trim();
+    return data.content[0].text.trim();
   } finally {
     clearTimeout(timeout);
   }
@@ -324,8 +345,8 @@ export async function fetchChatReply(messages, context) {
     }
   }
 
-  if (CLIENT_SIDE_OPENAI_KEY) {
-    return fetchChatReplyDirectFromOpenAI(messages, context);
+  if (CLIENT_SIDE_ANTHROPIC_KEY) {
+    return fetchChatReplyDirectFromAnthropic(messages, context);
   }
 
   throw new Error("No chat backend or client-side API key configured");
