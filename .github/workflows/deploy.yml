@@ -23,9 +23,14 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      # Please NOTE: VITE_ANTHROPIC_API_KEY is intentionally NOT passed here.
+      # Vite inlines VITE_* vars into the built JS bundle, so setting it
+      # here would ship a readable Anthropic API key on the public
+      # GitHub Pages site. The chat feature falls back gracefully to
+      # rule-based insights when no key/backend is configured. If you
+      # want live chat without a backend, set a strict spending cap on
+      # the key in the Anthropic Console first, then re-add this line.
       - run: npm run build
-        env:
-          VITE_ANTHROPIC_API_KEY: ${{ secrets.VITE_ANTHROPIC_API_KEY }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
